@@ -36,12 +36,14 @@ impl<A: MemPool> Page<A> {
             if let Some(next) = self.next.as_option() {
                 next.write(val, org_off)
             } else {
-                let cap = *SCRATCHPAD_SIZE;
-                let cap = utils::nearest_pow2(usize::max(cap, dist) as u64) as usize;
-                // FIXME: Memory leak
-                let (p, off, _, z) = A::pre_alloc(cap);
+                let base = *SCRATCHPAD_SIZE;
+                let min_size = dist + mem::size_of::<Page<A>>();
+                let size = utils::nearest_pow2(usize::max(base, min_size) as u64) as usize;
+                let (p, off, len, z) = A::pre_alloc(size);
+                // ensure cleanup if we crash before `perform`
+                A::drop_on_failure(off, len, z);
                 let pg = utils::read::<Page<A>>(p);
-                pg.cap = cap - mem::size_of::<Page<A>>();
+                pg.cap = size - mem::size_of::<Page<A>>();
                 pg.len = 0;
                 pg.next = self.next;
                 A::log64(A::off_unchecked(self.next.off_mut()), off, z);
@@ -116,8 +118,10 @@ impl<A: MemPool> Scratchpad<A> {
     pub(crate) fn new() -> Self {
         unsafe {
             let cap = *SCRATCHPAD_SIZE - mem::size_of::<Page<A>>();
-            // FIXME: Memory leak
-            let (p, _off, _) = A::alloc(mem::size_of::<Page<A>>() + cap);
+            let size = mem::size_of::<Page<A>>() + cap;
+            let (p, off, len, z) = A::pre_alloc(size);
+            A::drop_on_failure(off, len, z);
+            A::perform(z);
             let pg = utils::read::<Page<A>>(p);
             pg.cap = cap;
             pg.len = 0;
